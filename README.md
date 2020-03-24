@@ -16,13 +16,47 @@
 
 ## 规划
 cluster-master作为k8s的master节点不参与训练，只是用来分配pod
+
 node-110 node-109 node-106用来作为pod迁移节点
+
 至于node-105, 因为是Ubuntu系统，想让它作为新的节点进行加入操作，看看可行性
+
 (PS. 系统发行版不一样不知道会不会受影响，但是内核版本不一样是肯定会受影响的，所以我打算将所以内核先统一到5.3.0)
+
 (PPS. 按照现实安全环境考虑，所有操作非声明， 则为非root操作，但是是有sudoer权限的)
 
 ## 运行环境准备
 ### cluster-master:
+首先我们进行内核的升级.升级到和各个节点同样的内核版本
+
+首先先导入elrepo的key:
+```
+sudo rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
+```
+然后安装yum源:
+```
+sudo rpm -Uvh http://www.elrepo.org/elrepo-release-7.0-2.el7.elrepo.noarch.rpm
+```
+启用仓库后，可以使用下面的命令查看可以使用的内核相关的包:
+```
+sudo yum --disablerepo="*" --enablerepo="elrepo-kernel" list available
+```
+我看到有ml版本(5.5.11-1.el7), 淡定. ml版本可能存在Nvidia官方驱动还不支持的情况哦
+可以参考一下[forums的讨论](https://forums.developer.nvidia.com/t/installation-fails-with-kernels-5-1-x/77489):
+所以我还是选择了lt长期维护版， 这里是4.4.217-1.el7
+```
+sudo yum -y --enablerepo=elrepo-kernel install kernel-lt.x86_64 kernel-lt-devel.x86_64
+```
+这时候，在/etc/grub2.cfg中搜索"menuentry"能看到4.4.217的内核是在启动位置0的. 如果想哟生效，我们需要更改内核的启动顺序
+```
+sudo vim /etc/default/grub
+# 将GRUB_DEFAULT=saved 改为GRUB_DEFAULT=0
+```
+重新创建一下内核配置
+```
+sudo grub2-mkconfig -o /boot/grub2/grub.cfg
+sudo reboot
+```
 
 ### node-:
 很多人在安装完驱动程序后，才想到内核需要进行升级，那么，这次我也这样作死一波，如果是无驱动前提下升级内核，那就升级内核和驱动安装调换顺序就行
