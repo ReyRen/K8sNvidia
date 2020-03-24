@@ -22,9 +22,9 @@ node-110 node-109 node-106用来作为pod迁移节点
 (PPS. 按照现实安全环境考虑，所有操作非声明， 则为非root操作，但是是有sudoer权限的)
 
 ## 运行环境准备
-**cluster-master:**
+### cluster-master:
 
-**node-:**
+### node-:
 很多人在安装完驱动程序后，才想到内核需要进行升级，那么，这次我也这样作死一波，如果是无驱动前提下升级内核，那就升级内核和驱动安装调换顺序就行
 前往[Nvidia Driver](https://www.geforce.cn/drivers)进行选择官方驱动
 ```
@@ -202,6 +202,40 @@ docker run --runtime=nvidia -it --rm tensorflow/tensorflow:latest-gpu \
 
 容器使用GPU并不会对其独占，多个容器使用GPU就如同多个程序使用GPU一样，只要协调好显存与计算力的使用即可.
 
+-----------------------------
 
+接下来我们开始安装K8s相关组件:
+因为k8s是谷歌开源的，所以下文涉及的各种下载均需要连接谷歌服务器，而这对于我们来说是不可行的. 解决办法有两种：其一是服务器上挂代理；另外就是下载地址替换
+我们添加K8s的yum源:
+```
+# 创建并编辑/etc/yum.repos.d/kubernetes.repo文件
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg https://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
+exclude=kube*
+```
+安装
+```
+sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+```
+因为有些RHEL/CentOS 7的用户报告说iptables被绕过导致流量路由出错，所以需要设置以下内容
+创建并编辑/etc/sysctl.d/k8s.conf文件，输入以下内容:
+```
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+```
+查看是否添加成功:
+```
+sudo sysctl --system
+```
+启动kubelet服务
+```
+sudo systemctl enable kubelet && systemctl start kubelet
+```
+但是会发现，其实状态并不是running, 这是因为需要先进行master的初始化工作. 
 
 
