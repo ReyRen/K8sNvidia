@@ -321,6 +321,33 @@ kubectl delete secret kubernetes-dashboard-certs --namespace=kubernetes-dashboar
 kubectl delete secret kubernetes-dashboard-key-holder --namespace=kubernetes-dashboard
 ```
 
+----------------
+
+接下来需要用k8s管理GPU了，这也是最终目的
+
+自从k8s 1.8版本开始，官方开始推荐使用device plugin的方式来调用GPU使用. 截至目前, Nvidia和AMD都推出了相应的设备插件, 使得k8s调用GPU变得容易起来. 因为我们是Nvidia的显卡, 所以需要安装NVIDIA GPUdevice plugin
+
+在这里需要提前说明两个参数，--feature-gates="Accelerators=true"和--feature-gates="DevicePlugins=true"。在很多教程中都说明若要使用GPU，需要设置Accelerators为true，而实际上该参数在1.11版本之后就弃用了. 而将DevicePlugins设置为true也是在1.9版本之前需要做的事情，在1.10版本之后默认就为true. 所以对于我们来说，因为使用的是1.17版本，这两个feature-gates都不需要做设置.
+
+当node节点上修改万/etc/docker/daemon.json并且重启docker后
+
+master执行
+
+```
+kubectl create -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/1.0.0-beta4/nvidia-device-plugin.yml
+```
+然后通过
+```
+kubectl describe nodes
+```
+可以查看到能使用的GPU资源节点详细信息
+
+修改Docker默认的runtime, 修改/etc/docker/daemon.json, 加入
+```
+"default-runtime": "nvidia",
+```
+然后记得重新启动docker
+
 
 
 ### node-*:
@@ -554,18 +581,80 @@ sudo systemctl enable kubelet && systemctl start kubelet
 ```
 但是会发现，其实状态并不是running, 这是因为需要先进行master的初始化工作. 
 
-
-
-balabalabalabala
-balabalabalabala
-balabalabalabala
-balabalabalabala
-balabalabalabala
-balabalabalabala
-balabalabalabala
-
+接下来我们需要做一个很重要片的事儿, 那就同步系统时钟，否则，会node节点是死活加入不到master的，并且报的错误是balabala x509认证错误，网上解决反感都是说的是token过期, 当重新生产token还出现这个问题，那就是时钟问题了
+```
+timedatectl set-timezone Asia/Shanghai
+systemctl enable chronyd
+systemctl start chronyd
+# 将当前的 UTC 时间写入硬件时钟
+timedatectl set-local-rtc 0
+# 重启依赖于系统时间的服务
+systemctl restart rsyslog 
+systemctl restart crond
+```
+接下来需要将/etc/hosts进行节点名同步:
+```
+192.168.0.113   cluster-master
+192.168.0.110   node-110
+192.168.0.109   node-109
+192.168.0.106   node-106
+```
 当cluster-master上的`kubectl get pods -n kube-system`以及`kubectl get nodes`得到上面master部署部分的正确反馈后，node节点开始加入:
 ```
 sudo kubeadm join XXX:6443 --token XXX --discovery-token-ca-cert-hash XXX # 按照上面master init输出内容执行
 ```
 当出现“This node has joined the cluster:”说明加入成功了. 
+
+当然在这加入的preflight check中可能会出现"[WARNING IsDockerSystemdCheck]: detected "cgroupfs" as the Docker cgroup driver...."
+
+```
+ "exec-opts": ["native.cgroupdriver=systemd"], #将这个加入到/etc/docker/daemon.json中
+```
+
+在使用k8s-device-plugin时，node节点上需要做的是
+
+修改Docker默认的runtime, 修改/etc/docker/daemon.json, 加入
+```
+"default-runtime": "nvidia",
+```
+然后记得重新启动docker
+
+
+
+----------------
+
+----------------
+
+------------------
+
+----------------
+
+测试: 
+
+在cluster-master节点上创建tf-pod.ymal
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tf-pod
+spec:
+  containers:
+    - name: tf-container
+      image: tensorflow/tensorflow:latest-gpu
+      resources:
+        limits:
+          nvidia.com/gpu: 1 # requesting 1 GPUs
+```
+执行`kubectl apply -f ~/tf-pod.yaml`创建Pod. 使用`kubectl get pod`可以看到该Pod已经启动成功
+如果想看这个pod的详细启动过程
+```
+kubectl describe pod xxx
+```
+
+**关于pod报错:"Back-off restarting failed container"**
+这是因为你的容器内部其实已经`exit code 0`退出了, 这个表明没有任何错误的退出, 是因为pod默认的生命周期是很短的. 
+
+所以你应加一句
+```
+command: [ "/bin/bash", "-ce", "tail -f /dev/null" ] # 在image底下
+```
