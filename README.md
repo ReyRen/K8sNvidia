@@ -460,7 +460,7 @@ sudo chkconfig iptables off
 iptables -F && iptables -X && iptables -F -t nat && iptables -X -t nat # 清空防火墙默认策略
 iptables -P FORWARD ACCEPT
 swapoff -a # 关闭交换分区， 这个其实是为后面kubernetes做准备的，docker这里可以不做
-sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
 setenforce 0
 sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config # 关闭selinux
 ```
