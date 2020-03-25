@@ -9,9 +9,9 @@ do
 	# 镜像名既支持k8s.gcr.io开头的，也支持gcr.io/google_containers开头的
         if [[ "${img:0:1}"x != "#"x ]]; then
                 img_name=`echo $img | awk -F '/' '{print $NF}'`
-		docker pull ${username}/${img}
-		docker tag ${username}/${img} k8s.gcr.io/${img}
-		#docker tag ${username}/${img} gcr.io/google_containers/${img}
-		docker rmi ${username}/${image}
+		docker pull ${username}/${img_name}
+		docker tag ${username}/${img_name} k8s.gcr.io/${img_name}
+		#docker tag ${username}/${img_name} gcr.io/google_containers/${img_name}
+		docker rmi ${username}/${img_name}
         fi
 done
