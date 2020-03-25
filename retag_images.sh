@@ -1,25 +1,17 @@
 #!/bin/bash
-KUBE_VERSION=v1.17.4
-KUBE_PAUSE_VERSION=3.1
-ETCD_VERSION=3.4.3-0
-DNS_VERSION=1.6.5
-
+images=(`cat ~/k8s_need_images.dat`)
 username=registry.cn-hangzhou.aliyuncs.com/google_containers
-
-images=(kube-proxy:${KUBE_VERSION}
-kube-scheduler:${KUBE_VERSION}
-kube-controller-manager:${KUBE_VERSION}
-kube-apiserver:${KUBE_VERSION}
-pause:${KUBE_PAUSE_VERSION}
-etcd-amd64:${ETCD_VERSION}
-coredns:${DNS_VERSION}
-)
-
-for image in ${images[@]}
+#echo ${images[@]}
+for img in ${images[@]}
 do
-	new_image=`echo $image|sed 's/-amd64//g'` ##此处需删除“-amd64”,否则kuadm还是无法识别本地镜像
-    	docker pull ${username}/${image}
-    	docker tag ${username}/${image} k8s.gcr.io/${new_image} 
-    	#docker tag ${username}/${image} gcr.io/google_containers/${image} 
-    	docker rmi ${username}/${image} 
+	# 之后还有需要下载的镜像，直接在k8s_need_images.txt文件中添加即可
+	# 不需要下载的（比如之前添加过的）前加上#号即可
+	# 镜像名既支持k8s.gcr.io开头的，也支持gcr.io/google_containers开头的
+        if [[ "${img:0:1}"x != "#"x ]]; then
+                img_name=`echo $img | awk -F '/' '{print $NF}'`
+		docker pull ${username}/${img}
+		docker tag ${username}/${img} k8s.gcr.io/${img}
+		#docker tag ${username}/${img} gcr.io/google_containers/${img}
+		docker rmi ${username}/${image}
+        fi
 done
