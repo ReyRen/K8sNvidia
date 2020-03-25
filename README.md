@@ -42,7 +42,9 @@ sudo rpm -Uvh http://www.elrepo.org/elrepo-release-7.0-2.el7.elrepo.noarch.rpm
 sudo yum --disablerepo="*" --enablerepo="elrepo-kernel" list available
 ```
 我看到有ml版本(5.5.11-1.el7), 淡定. ml版本可能存在Nvidia官方驱动还不支持的情况哦
-可以参考一下[forums的讨论](https://forums.developer.nvidia.com/t/installation-fails-with-kernels-5-1-x/77489):
+
+可以参考一下[Nvidia-forums](https://forums.developer.nvidia.com/t/installation-fails-with-kernels-5-1-x/77489):
+
 所以我还是选择了lt长期维护版， 这里是4.4.217-1.el7
 ```
 sudo yum -y --enablerepo=elrepo-kernel install kernel-lt.x86_64 kernel-lt-devel.x86_64
@@ -58,8 +60,272 @@ sudo grub2-mkconfig -o /boot/grub2/grub.cfg
 sudo reboot
 ```
 
-### node-:
+-------
+
+接下来是安装docker环境
+```
+# 安装依赖
+sudo yum install -y yum-utils device-mapper-persistent-data lvm2
+# 添加docker的yum源，我们这里添加的是阿里的源，在国内快些
+sudo yum-config-manager --add-repo http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+# 如果想指定版本安装，那么执行这条查看
+yum list docker-ce --showduplicates | sort -r
+# 我们这里直接下载最新的了
+sudo yum install docker-ce
+```
+接下来先做一些防火墙, iptables, selinux的关闭
+```
+sudo systemctl disable firewalld.service && systemctl stop firewalld.service
+#防火墙永久关闭, 如果显示无服务的话就算了
+sudo chkconfig iptables off
+# 切换到root
+iptables -F && iptables -X && iptables -F -t nat && iptables -X -t nat # 清空防火墙默认策略
+iptables -P FORWARD ACCEPT
+swapoff -a # 关闭交换分区， 这个其实是为后面kubernetes做准备的，docker这里可以不做
+sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+setenforce 0
+sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config # 关闭selinux
+```
+这里就安装完成了，启动docker服务吧
+```
+sudo systemctl start docker && systemctl enable docker
+sudo docker versio
+```
+执行Docker需要用户具有sudo权限，所以可以将需要使用Docker的普通用户加入docker用户组
+```
+sudo usermod -aG docker XXX
+```
+要想生效，得logout出去一次或者reboot
+
+接下来我们开始安装K8s相关组件:
+
+因为k8s是谷歌开源的，所以下文涉及的各种下载均需要连接谷歌服务器，而这对于我们来说是不可行的. 解决办法有两种：其一是服务器上挂代理；另外就是下载地址替换
+
+我们添加K8s的yum源:
+```
+# 创建并编辑/etc/yum.repos.d/kubernetes.repo文件
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg https://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
+exclude=kube*
+```
+安装
+```
+sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+```
+因为有些RHEL/CentOS 7的用户报告说iptables被绕过导致流量路由出错，所以需要设置以下内容
+
+创建并编辑/etc/sysctl.d/k8s.conf文件，输入以下内容:
+```
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+```
+查看是否添加成功:
+```
+sudo sysctl --system
+```
+启动kubelet服务
+```
+sudo systemctl enable kubelet && systemctl start kubelet
+```
+但是会发现，其实状态并不是running, 这是因为需要先进行master的初始化工作.
+
+接下来是我们的master初始化工作
+
+基础命令是`kubeadm init`，不过先别着急执行
+
+初始化Master的过程中会下载一些镜像，因为k8s很多系统组件也是以容器的方式运行。可以先执行kubeadm config images pull尝试下载一下，如果没有设置代理，那么肯定会出现网络错误，因为无法连接谷歌的服务器
+
+关于谷歌镜像的下载解决办法有多种：
+
+    * 使用阿里云自己做一个镜像站，修改k8s配置从阿里云下载
+    * 使用GitHub同步结合Docker Hub Auto Build
+    * 手动下载镜像然后重新打tag
+
+另外附[Google所有镜像](https://console.cloud.google.com/gcr/images/google-containers)
+
+通过下面这个命令查看对于当前的kubernetes版本需要安装的镜像的版本
+```
+cd ~
+kubeadm config images list > k8s_need_images.dat
+```
+然后将其放入到了k8s_need_images
+
+然后使用这个脚本[retag_images.sh](https://github.com/ReyRen/K8sNvidia/blob/master/retag_images.sh)
+```
+wget https://raw.githubusercontent.com/ReyRen/K8sNvidia/master/retag_images.sh
+sh retag_images.sh   
+```
+我们以上用的就是阿里云的源去干这个事儿
+
+稍等一会. 完成后使用docker images查看下，所需要的k8s镜像都已存在, 并且标签都打好了. 
+
+接下来我们需要做一个很重要片的事儿，特别坑
+
+那就同步系统时钟，否则，会node节点是死活加入不到master的，并且报的错误是balabala x509认证错误，网上解决反感都是说的是token过期, 当重新生产token还出现这个问题，那就是时钟问题了. [kubernetes-issue:58921](https://github.com/kubernetes/kubernetes/issues/58921#issuecomment-466362170)这个三哥一语道破
+```
+timedatectl set-timezone Asia/Shanghai
+systemctl enable chronyd
+systemctl start chronyd
+# 将当前的 UTC 时间写入硬件时钟
+timedatectl set-local-rtc 0
+# 重启依赖于系统时间的服务
+systemctl restart rsyslog 
+systemctl restart crond
+```
+接下来需要将/etc/hosts进行节点名同步:
+```
+192.168.0.113   cluster-master
+192.168.0.110   node-110
+192.168.0.109   node-109
+192.168.0.106   node-106
+```
+我们需要创建一个默认的kubeadm-config.yaml文件在master上:
+```
+kubeadm config print init-defaults  > kubeadm-config.yaml
+```
+可以参考[kubeadm-config](https://github.com/ReyRen/K8sNvidia/blob/master/kubeadm-config.yaml)
+进行一些简单的修改
+
+然后执行
+```
+sudo kubeadm config images pull --config kubeadm-config.yaml
+```
+其中可能会有个warning
+
+[WARNING IsDockerSystemdCheck]: detected "cgroupfs" as the Docker cgroup driver....
+
+文件驱动默认由systemd改成cgroupfs, 而我们安装的docker使用的文件驱动是systemd, 造成不一致, 导致镜像无法启动
+```
+docker info | grep Cgroup
+```
+我们也能看到docker默认使用的文件驱动是cgroupfs, 那么我们在kubeadm init完成后修改一下`/etc/docker/daemon.json`文件就行了，问题不大
+```
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "registry-mirrors": ["https://registry.docker-cn.com"]
+}
+```
+接下来一小会儿的preflight check， 那么就会出现“Your Kubernetes master has initialized successfully!”说明初始化成功了, 这样的话我们看看`docker ps`和'systemctl status kubelet'会发现docker中将之前下载的image全启动了，kubelet状态为running. 
+
+**PS:** 如果由于你重新启动docker, 或者某种原因想重新初始化一下master, 那么需要做一些工作:
+```
+sudo kubeadm reset
+rm -rf $HOME/.kube/config # 如果之前创建过，一定要做这一步，reset是不会给你删除的，不然是初始化不成功的
+```
+为了让非root用户也能使用kubectl来管理k8s集群，需要执行以下命令：
+```
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+接下来我们查看一些状态:
+```
+kubectl get cs # 查看组件状态, 都为healthy
+kubectl get nodes # 查看节点状态
+kubectl get pods -n kube-system # 查看kubernetes管理的kube-system命名空间的pods状态
+```
+在这里发现两个问题:
+* coredns的pod是pending状态: 这是因为需要node节点的加入, 但是还没有让node加入，所以为pending
+* master node的状态为Notready: 这是因为还没有安装网络插件
+
+接下来我们就需要安装网络插件, 到目前，node和master是不会有网络通讯的, 目前最流行的Kubernetes网络插件有Flannel、Calico、Canal、Weave 这里选择使用flannel. 
+
+在cluster-master节点上执行:
+```
+wget https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+sed -i 's@quay.io@quay.azk8s.cn@g' kube-flannel.yml
+kubectl get pods -n kube-system # 稍等片刻会发现有了flannel的pods并且running起来了
+kubectl get nodes # 状态也变成Ready了
+```
+接下来就可以等待node那边执行刚init出来的命令进行加入了. 
+成功加入后，稍等片刻
+```
+kubectl get nodes # 会发现全部是Ready状态了
+```
+
+至此，kubernetes管理起了集群搭建完了. 
+
+
+接下来高一个dashboard吧
+可以参考最新[官方recommended.ymal](https://github.com/kubernetes/dashboard/#getting-started)
+```
+wget https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.0-rc4/aio/deploy/recommended.yaml
+mv recommended.yaml dashboard-recommended.yaml 
+kubectl apply -f dashboard-recommended.yaml
+```
+在全部创建好后
+```
+kubectl get pods -n kubernetes-dashboard
+kubectl get pods --all-namespaces
+```
+会看到都是running状态
+
+从1.7开始，dashboard只允许通过https访问，如果使用kube proxy则必须监听localhost 或 127.0.0.1. 对于NodePort没有这个限制，但是仅建议在开发环境中使. 对于不满足这些条件的登录访问, 在登录成功后浏览器不跳转，始终停在登录界面
+
+我们为了让别的机器也能访问，所以，启用了端口转发来访问dashboard:
+```
+kubectl port-forward -n kubernetes-dashboard  svc/kubernetes-dashboard 4443:443 --address 0.0.0.0
+```
+这样通过访问`https://192.168.0.113:4443`就能访问了，但是是需要token的, 所以我们创建一个用户，并赋予cluster-admin的最高权限然后生成token
+
+第一次执行需要:
+```
+kubectl create sa dashboard-admin -n kube-system
+kubectl create clusterrolebinding dashboard-admin --clusterrole=cluster-admin --serviceaccount=kube-system:dashboard-admin
+```
+然后使用
+```
+wget https://raw.githubusercontent.com/ReyRen/K8sNvidia/master/token_regenerate.sh
+sh token_regenerate.sh
+```
+即可登陆进去了. 
+
+但是通过上面的port forward未免有点麻烦, kubernetes是支持NodePort方法的:
+```
+kubectl get deployments -A # 查看一下dashboard的service namespace
+kubectl -n kube-system edit service kubernetes-dashboard --namespace=kubernetes-dashboard
+```
+进入编辑页面后, 将`type: ClusterIP` 修改为 `type: NodePort`保存
+```
+kubectl -n kube-system get service kubernetes-dashboard --namespace=kubernetes-dashboard
+```
+可以查看到自动生成的段口号，所以可以直接使用那个段口号访问了. 
+
+
+关于如何移除Kubernetes dashboard资源从我的deployment中的问题(这个可以作为dashboard部署失败想重新部署或者移除其他deployment的样例):
+```
+kubectl get service -A # 查看是什么namespace
+```
+然后
+```
+kubectl delete deployment kubernetes-dashboard  --namespace=kubernetes-dashboard
+kubectl delete deployment dashboard-metrics-scraper --namespace=kubernetes-dashboard
+```
+如果有service的话，做同样的事情
+```
+kubectl get service -A
+```
+```
+kubectl delete service kubernetes-dashboard  --namespace=kubernetes-dashboard
+kubectl delete service dashboard-metrics-scraper  --namespace=kubernetes-dashboard
+```
+最后是删除service account和密码:
+```
+kubectl delete sa kubernetes-dashboard --namespace=kubernetes-dashboard
+kubectl delete secret kubernetes-dashboard-certs --namespace=kubernetes-dashboard
+kubectl delete secret kubernetes-dashboard-key-holder --namespace=kubernetes-dashboard
+```
+
+
+
+### node-*:
 很多人在安装完驱动程序后，才想到内核需要进行升级，那么，这次我也这样作死一波，如果是无驱动前提下升级内核，那就升级内核和驱动安装调换顺序就行
+
 前往[Nvidia Driver](https://www.geforce.cn/drivers)进行选择官方驱动
 ```
 cd ~
@@ -71,6 +337,7 @@ sudo yum update
 sudo yum -y install gcc dkms
 ```
 阻止nouveau模块儿加载, nouveau是操作系统自带的显卡驱动，这里我们需要Nvidia专用显卡驱动. 
+
 我曾经Nvidia没装成功并且还将nouveau关闭掉，作死的换了个高清壁纸，图形化界面直接卡死，幸好终端模式不受影响
 ```
 # 查看是否有加载nouveau驱动模块儿，有输出就需要将他屏蔽
@@ -80,6 +347,7 @@ lsmod | grep nouveau
 echo -e "blacklist nouveau\noptions nouveau modeset=0" > /etc/modprobe.d/blacklist.conf
 ```
 重新构建一下initramfs image文件
+
 至于什么是initramfs, 通俗的来说就是内核在启动的时候会将会从这个image中的文件导入到rootfs中，然后内核检查rootfs中是否有init文件，如果有则执行它并且作为1号进程. 这个1号进程也就接管了后续的工作, 包括定位挂在真正的文件系统等. 如果没有在rootfs中找到init文件，那么内核会按照以前的版本定位方式挂载跟分区.这里我们更改了内核模块儿，最好的方式就是备份之前的initramfs， 然后重新生成一份
 ```
 # 使用root
@@ -93,6 +361,7 @@ chmod +x NVIDIA-Linux-x86_64-440.36.run
 sudo ./NVIDIA-Linux-x86_64-440.36.run
 ```
 如果在这个时候报错了：Unable to find the kernel source tree for the currently running kernel
+
 说明现在没有制定版本的kernel-devel包， 也就是说/usr/src/kernels/目录下是没有当前内核版本的kernel-tree的
 ```
 # 查看目前内核版本
@@ -103,6 +372,7 @@ yum list | grep kernel-devel
 # 如果发现不一致, 那么可以去[koji](https://koji.fedoraproject.org/koji)或者[kernel-devel](https://pkgs.org/download/kernel-devel) 
 ```
 这样你就会在/usr/src/kernel/下看到对应tree了. 
+
 按照提示就会将驱动安装完成， 最后记得reboot一下
 
 驱动安装完成后
@@ -110,7 +380,9 @@ yum list | grep kernel-devel
 nvidia-smi
 ```
 可以看到显示的效果
+
 接下来我们进行内核的升级.
+
 首先先导入elrepo的key:
 ```
 sudo rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
@@ -124,7 +396,9 @@ sudo rpm -Uvh http://www.elrepo.org/elrepo-release-7.0-2.el7.elrepo.noarch.rpm
 sudo yum --disablerepo="*" --enablerepo="elrepo-kernel" list available
 ```
 我看到有ml版本(5.5.11-1.el7), 淡定. ml版本可能存在Nvidia官方驱动还不支持的情况哦
+
 可以参考一下[forums的讨论](https://forums.developer.nvidia.com/t/installation-fails-with-kernels-5-1-x/77489):
+
 所以我还是选择了lt长期维护版， 这里是4.4.217-1.el7
 ```
 sudo yum -y --enablerepo=elrepo-kernel install kernel-lt.x86_64 kernel-lt-devel.x86_64
@@ -153,6 +427,8 @@ sudo reboot
 接下来先让GPU可以在docker中使用吧. 
 ```
 sudo systemctl disable firewalld.service && systemctl stop firewalld.service
+#防火墙永久关闭, 如果显示无服务的话就算了
+sudo chkconfig iptables off
 # 切换到root
 iptables -F && iptables -X && iptables -F -t nat && iptables -X -t nat # 清空防火墙默认策略
 iptables -P FORWARD ACCEPT
@@ -182,6 +458,7 @@ sudo docker versio
 sudo usermod -aG docker XXX
 ```
 要想生效，得logout出去一次或者reboot
+
 接下来，我们需要更改一下docker hub的源，方便在国内下载
 ```
 sudo vim /etc/docker/daemon.json # 如果不存在就创建一个
@@ -201,6 +478,7 @@ sudo systemctl start docker
 ------
 
 接下来安装Nvidia-docker
+
 安装好了普通的Docker以后，如果想在容器内使用GPU会非常麻烦（并不是不可行），好在Nvidia为了让大家能在容器中愉快使用GPU，基于Docker开发了Nvidia-Docker，使得在容器中深度学习框架调用GPU变得极为容易, 只要安装了显卡驱动就可以(终于不用自己搞CUDA和cuDNN了).
 ```
 # 添加相关库 切换到root用户
@@ -215,6 +493,7 @@ pkill -SIGHUP dockerd
 docker run --runtime=nvidia --rm nvidia/cuda nvidia-smi
 ```
 nvidia-docker2开始就不需要使用nvidia-docker了，而是使用--runtime来集成进了docker里, --rm意思就是执行完删除容器. 
+
 安装完nvidia-docker后，/etc/docker/daemon.json需要重新添加国内docker hub的源
 ```
 {
@@ -239,7 +518,9 @@ docker run --runtime=nvidia -it --rm tensorflow/tensorflow:latest-gpu \
 -----------------------------
 
 接下来我们开始安装K8s相关组件:
+
 因为k8s是谷歌开源的，所以下文涉及的各种下载均需要连接谷歌服务器，而这对于我们来说是不可行的. 解决办法有两种：其一是服务器上挂代理；另外就是下载地址替换
+
 我们添加K8s的yum源:
 ```
 # 创建并编辑/etc/yum.repos.d/kubernetes.repo文件
@@ -257,6 +538,7 @@ exclude=kube*
 sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
 ```
 因为有些RHEL/CentOS 7的用户报告说iptables被绕过导致流量路由出错，所以需要设置以下内容
+
 创建并编辑/etc/sysctl.d/k8s.conf文件，输入以下内容:
 ```
 net.bridge.bridge-nf-call-ip6tables = 1
@@ -273,3 +555,17 @@ sudo systemctl enable kubelet && systemctl start kubelet
 但是会发现，其实状态并不是running, 这是因为需要先进行master的初始化工作. 
 
 
+
+balabalabalabala
+balabalabalabala
+balabalabalabala
+balabalabalabala
+balabalabalabala
+balabalabalabala
+balabalabalabala
+
+当cluster-master上的`kubectl get pods -n kube-system`以及`kubectl get nodes`得到上面master部署部分的正确反馈后，node节点开始加入:
+```
+sudo kubeadm join XXX:6443 --token XXX --discovery-token-ca-cert-hash XXX # 按照上面master init输出内容执行
+```
+当出现“This node has joined the cluster:”说明加入成功了. 
