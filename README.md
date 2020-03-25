@@ -650,6 +650,8 @@ spec:
 ```
 kubectl describe pod xxx
 ```
+进入pod内部就是通过执行`kubectl exec tf-pod -it -- bash`
+
 
 **关于pod报错:"Back-off restarting failed container"**
 这是因为你的容器内部其实已经`exit code 0`退出了, 这个表明没有任何错误的退出, 是因为pod默认的生命周期是很短的. 
@@ -657,4 +659,18 @@ kubectl describe pod xxx
 所以你应加一句
 ```
 command: [ "/bin/bash", "-ce", "tail -f /dev/null" ] # 在image底下
+```
+**关于第一次新加入节点重启动docker会发现该flannel,proxy, device-plugin失败的问题**
+如果出现以上问题，需要的是将新加入的node节点进行重直然后重新加入:
+```
+kube reset
+rm -rf $HOME/...
+join balabalabala
+```
+
+**关于想要重新生成新的join msg的问题**
+```
+ kubeadm token list # 用于查看当前可用的token
+ kubeadm token create # 会生成一个新的token
+ openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 --hex | sed 's/^.* //'   # 会生成新的hash秘钥
 ```
