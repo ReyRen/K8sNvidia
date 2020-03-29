@@ -22,16 +22,13 @@
 
 我们需要做到的就是操作系统发行版和内核版本在集群中保持一致. 
 
+以下的操作是在centos-7.6-1908上执行的(内包含升级内核到4.4), 如果操作系统是Ubuntu-18.04.3(内核版本是5.3.0-40), 请移位至[Ubuntu18版本](https://github.com/ReyRen/K8sNvidia/blob/master/README-Ubuntu.md)
 
 
 ## 规划
 cluster-master作为k8s的master节点不参与训练，只是用来分配pod
 
 node-110 node-109 node-106用来作为pod迁移节点
-
-至于node-105, 因为是Ubuntu系统，想让它作为新的节点进行加入操作，看看可行性
-
-(PS. 系统发行版不一样不知道会不会受影响，但是内核版本不一样是肯定会受影响的，所以我打算将所以内核先统一到5.3.0)
 
 (PPS. 按照现实安全环境考虑，所有操作非声明， 则为非root操作，但是是有sudoer权限的)
 
@@ -99,7 +96,7 @@ sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config # 关闭selinux
 这里就安装完成了，启动docker服务吧
 ```
 sudo systemctl start docker && systemctl enable docker
-sudo docker versio
+sudo docker version
 ```
 执行Docker需要用户具有sudo权限，所以可以将需要使用Docker的普通用户加入docker用户组
 ```
@@ -249,6 +246,7 @@ kubectl get pods -n kube-system # 查看kubernetes管理的kube-system命名空�
 ```
 wget https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
 sed -i 's@quay.io@quay.azk8s.cn@g' kube-flannel.yml
+kubectl apply -f kube-flannel.yml
 kubectl get pods -n kube-system # 稍等片刻会发现有了flannel的pods并且running起来了
 kubectl get nodes # 状态也变成Ready了
 ```
@@ -488,7 +486,7 @@ sudo yum install docker-ce
 这里就安装完成了，启动docker服务吧
 ```
 sudo systemctl start docker && systemctl enable docker
-sudo docker versio
+sudo docker version
 ```
 执行Docker需要用户具有sudo权限，所以可以将需要使用Docker的普通用户加入docker用户组
 ```
@@ -683,4 +681,26 @@ join balabalabala
  kubeadm token list # 用于查看当前可用的token
  kubeadm token create # 会生成一个新的token
  openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 --hex | sed 's/^.* //'   # 会生成新的hash秘钥
+```
+
+**关于报错**"Warning FailedCreatePodSandBox 25s (x16 over 8m53s) kubelet, node-106 Failed to create pod sandbox: rpc error: code = Unknown desc = failed pulling image "k8s.gcr.io/pause:3.2": Error response from daemon: Get https://k8s.gcr.io/v2/: net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers)"
+
+这个报错是通过在master上看到node-106一直是NotReady状态, 并且在node上`docker ps`一直都是空的. 当使用`kubectl get pods -n kube-system`查看master上的pod状态时，proxy和flannel是挂了的, 一个是"containercreating"， 一个是"init0/1".
+
+于是使用`kubectl describe pod kube-proxy-XX --namespace=kube-system`看到这个pod的具体的信息, 发现是从谷歌拉取
+
+```
+k8s.gcr.io/pause:XX
+k8s.gcr.io/kube-proxy:vXX
+```
+的时候被墙了.
+
+所以我们同样使用上面master的办法，但是只需要flannel和proxy两个即可，提前将他们拉下来
+
+然后node上执行`sudo kubeadm reset`, 然后master上`kubectl delete node node-106`提出去， 重新join就会发现完美了.
+
+
+**关于查看k8s系统级别日志**
+```
+sudo journalctl -f -u kubelet
 ```
