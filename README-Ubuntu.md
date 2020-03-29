@@ -175,3 +175,178 @@ kubectl get nodes # 状态也变成Ready了
 kubectl get nodes # 会发现全部是Ready状态了
 ```
 至此，kubernetes管理起了集群搭建完了.
+
+如果想要删除docker中的已有的k8s容器，需要做的是，先要停止kubelet服务，否则，删除完会立马重新创建
+```
+sudo systemctl stop kubelet.service
+docker stop $(docker ps -aq) # 停止容器
+docker rm $(docker ps -aq) # 删除所有的容器
+docker rmi $(docker images -q) # 删除所有的image
+```
+
+当node节点加入后， 接下来需要用k8s管理GPU了，这也是最终目的
+
+自从k8s 1.8版本开始，官方开始推荐使用device plugin的方式来调用GPU使用. 截至目前, Nvidia和AMD都推出了相应的设备插件, 使得k8s调用GPU变得容易起来. 因为我们是Nvidia的显卡, 所以需要安装NVIDIA GPUdevice plugin
+
+在这里需要提前说明两个参数，--feature-gates="Accelerators=true"和--feature-gates="DevicePlugins=true"。在很多教程中都说明若要使用GPU，需要设置Accelerators为true，而实际上该参数在1.11版本之后就弃用了. 而将DevicePlugins设置为true也是在1.9版本之前需要做的事情，在1.10版本之后默认就为true. 所以对于我们来说，因为使用的是1.18版本，这两个feature-gates都不需要做设置.
+
+```
+kubectl create -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/1.0.0-beta4/nvidia-device-plugin.yml
+```
+然后通过
+```
+kubectl describe nodes
+```
+可以查看到能使用的GPU资源节点详细信息
+
+
+----------------
+----------------
+----------------
+
+
+### node-*:
+
+首先我们需要将防火墙, iptables等进行关闭
+```
+systemctl status ufw.service
+sudo systemctl stop ufw.service
+sudo systemctl disable ufw.service
+# 切换到root
+iptables -F && iptables -X && iptables -F -t nat && iptables -X -t nat # 清空防火墙默认策略
+iptables -P FORWARD ACCEPT
+```
+接下来需要关闭交换分区
+```
+sudo swapon --show # 查看当前交换分区情况，如果无输出，说明交换分区已关闭或者未使用
+sudo swapoff -v /swapfile # 临时关闭了
+sudo vim /etc/fstab # 将/swapoff注释，这样就永久关闭了
+```
+修改时钟
+```
+ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+bash -c "echo 'Asia/Shanghai' > /etc/timezone"
+```
+将Ubuntu的apt源替换为阿里的，这样方便下载东西
+```
+sudo mv /etc/apt/sources.list /etc/apt/sources.list.bak
+sudo rm -f /etc/apt/sources.list.save
+wget https://raw.githubusercontent.com/ReyRen/K8sNvidia/master/source.list
+sudo cp -f source.list /etc/apt/sources.list
+sudo apt-get update
+```
+安装docker
+```
+sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+sudo curl -fsSL https://mirrors.ustc.edu.cn/docker-ce/linux/ubuntu/gpg | sudo apt-key add -
+sudo add-apt-repository "deb [arch=amd64] https://mirrors.ustc.edu.cn/docker-ce/linux/ubuntu $(lsb_release -cs) stable"
+sudo apt-get update
+apt-cache madison docker-ce # 可以看到所能支持的docker-ce, 可以在install的时候指定版本进行下载
+sudo apt-get install -y docker-ce
+sudo systemctl enable docker
+sudo systemctl start docker
+sudo usermod -aG docker username # 将username用户添加到docker组，这样就可以非root执行docker了
+```
+接下来将docker hub的源地址更改为国内的，这样方便后续image的下载
+```
+vim /etc/docker/daemon.json
+{
+    "registry-mirrors": ["https://registry.docker-cn.com"]
+}
+```
+接下来安装Nvidia显卡驱动程序
+```
+lsmod | grep nouveau # 查看是否有加载nouveau驱动模块儿，有输出就需要将他屏蔽
+# 使用root
+echo -e "blacklist nouveau\noptions nouveau modset=0" >> /etc/modprobe.d/blacklist.conf
+
+sudo reboot
+```
+安装编译工具
+```
+sudo apt-get install gcc make
+```
+接下来切换到终端控制，然后执行下载好的驱动程序
+```
+sudo init 3
+chmod +x NVIDIA-Linux-x86_64-440.36.run
+sudo ./NVIDIA-Linux-x86_64-440.36.run
+nvidia-smi
+```
+接下来需要安装nvidia-docker
+安装好了普通的Docker以后，如果想在容器内使用GPU会非常麻烦（并不是不可行），好在Nvidia为了让大家能在容器中愉快使用GPU，基于Docker开发了Nvidia-Docker，使得在容器中深度学习框架调用GPU变得极为容易, 只要安装了显卡驱动就可以(终于不用自己搞CUDA和cuDNN了).
+```
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+# 切换到root
+curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | tee /etc/apt/sources.list.d/
+nvidia-docker.list
+sudo apt-get update
+sudo apt-get install nvidia-docker2
+pkill -SIGHUP dockerd
+```
+按照默认方式安装完nvidia-docker2后，会将`/etc/docker/daemon.json`冲掉, 所以重新写为:
+```
+{
+    "runtimes": {
+        "nvidia": {
+            "path": "nvidia-container-runtime",
+            "runtimeArgs": []
+        }
+    },
+    "registry-mirrors": ["https://registry.docker-cn.com"]
+}
+```
+记得重启一下docker.service
+
+检验:
+```
+docker run --runtime=nvidia --rm nvidia/cuda nvidia-smi
+```
+接下来安装k8s组建
+```
+# 切换为root
+curl -s https://mirrors.aliyun.com/kubernetes/apt/doc/apt-key.gpg | sudo apt-key add -
+echo "deb https://mirrors.aliyun.com/kubernetes/apt/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update
+sudo apt install -y kubelet=1.17.4-00 kubeadm=1.17.4-00 kubectl=1.17.4-00 # 也可不指定版本下载最新的
+kubeadm version # 可以看到已经安装的版本
+sudo systemctl enable kubelet
+sudo systemctl start kubelet # 但是会发现是running不起来的, 别急， join到已经有的master就可以自动起来了
+```
+在join之前，更新一下`/etc/hosts`:
+```
+192.168.0.113   cluster-master
+192.168.0.110   yuanren
+192.168.0.109   node-109
+192.168.0.106   node-106
+```
+另外对`/etc/docker/daemon.json`我们再加两条:
+```
+"exec-opts": ["native.cgroupdriver=systemd"],
+"default-runtime": "nvidia",
+```
+然后执行join命令就行, 如果忘记了token和ca, 那就在master重新生成一下:
+```
+kubeadm token list # 用于查看当前可用的token
+kubeadm token create # 会生成一个新的token
+openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 --hex | sed 's/^.* //'   # 会生成新的hash秘钥
+udo kubeadm join XXX:6443 --token XXX --discovery-token-ca-cert-hash sha256:XXX
+```
+**关于报错**
+"Warning  FailedCreatePodSandBox  25s (x16 over 8m53s)  kubelet, node-106  Failed to create pod sandbox: rpc error: code = Unknown desc = failed pulling image "k8s.gcr.io/pause:3.2": Error response from daemon: Get https://k8s.gcr.io/v2/: net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers)"
+
+这个报错是通过在master上看到node-106一直是NotReady状态, 并且在node上`docker ps`一直都是空的. 
+当使用`kubectl get pods -n kube-system`查看master上的pod状态时，proxy和flannel是挂了的, 一个是"containercreating"， 一个是"init0/1". 
+
+于是使用`kubectl describe pod kube-proxy-XX --namespace=kube-system` 看到这个pod的具体的信息, 发现是从谷歌拉取
+```
+k8s.gcr.io/pause:XX
+k8s.gcr.io/kube-proxy:vXX
+```
+的时候被墙了. 
+
+所以我们同样使用上面master的办法，但是只需要flannel和proxy两个即可，提前将他们拉下来
+
+然后node上执行`sudo kubeadm reset`, 然后master上`kubectl delete node node-106`提出去， 重新join就会发现完美了. 
+
