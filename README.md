@@ -704,3 +704,28 @@ k8s.gcr.io/kube-proxy:vXX
 ```
 sudo journalctl -f -u kubelet
 ```
+如何将加入的节点打标签呢
+```
+kubectl label nodes k8s-node3 node-role.kubernetes.io/node3=
+```
+这样就将k8s-node3节点打标签为node3
+
+如何正确的删除一个pod
+* 先删除pod
+* 再删除对应的deployment
+否则只是删除pod是不管用的, 还会看到pod, 因为depolyment.yaml文件中定义了副本数量
+```
+kubectl get pod -n kubernetes-dashboard
+kubectl delete pod dashboard-metrics-scraper-779f5454cb-w7lm2 -n kubernetes-dashboard # 如果使用--force那么是可以彻底删除的
+# 这时候，你会发现感觉pod仍然存储
+kubectl get pod -n kubernetes-dashboard
+kubectl get deployment -n kubernetes-dashboard
+kubectl delete deployment dashboard-metrics-scraper -n kubernetes-dashboard
+```
+
+
+在我们删除一个pod后，这个pod会一直处于`terminating`状体
+这种情况下, 我们可以使用强制删除命令:
+```
+kubectl delete pod [pod name] --force --grace-period=0 -n [namespace]
+```
