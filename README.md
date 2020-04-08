@@ -729,3 +729,50 @@ kubectl delete deployment dashboard-metrics-scraper -n kubernetes-dashboard
 ```
 kubectl delete pod [pod name] --force --grace-period=0 -n [namespace]
 ```
+
+
+**关于在k8s中集群节点删除的异常以及解决方案**
+
+推荐[来自gitbook](https://feisky.gitbooks.io/kubernetes/troubleshooting/pod.html)作为阅读参考
+
+现象: 当突然在node-110上将docker重启后，偶尔，会发现，node-110上没有任何的容器自动拉起了. 回到master上，发现node是ready状态，pod是running状态, 
+```
+kubectl get pod <pod-name> -o yaml #查看pod的配置是否正确
+kubectl get pods -o wide # 查看默认namespace下的pods的全部暴露属性状态
+kubectl describe pod <pod-name> # 查看pod的事件
+kubectl logs <pod-name> [-c <container-name>] # 查看容器日志
+journacltl -u kubelet # 查看kubelet日志
+```
+其实, 此时的node是失联状态, 不信重启一下master的docker试试. 
+
+从k8s v1.5开始, kubernetes不会因为node失联而删除其上正在运行的 Pod，而是将其标记为 Terminating 或 Unknown 状态。想要删除这些状态的 Pod 有三种方法：
+* 从集群中删除node
+* Node恢复正常, Kubelet 会重新跟 kube-apiserver 通信确认这些 Pod 的期待状态，进而再决定删除或者继续运行这些 Pod
+* 用户强制删除, 用户可以执行`kubectl delete pods <pod> --grace-period=0 --force`强制删除 Pod. 除非明确知道 Pod 的确处于停止状态(比如 Node 所在 VM 或物理机已经关机), 否则不建议使用该方法。特别是 StatefulSet 管理的 Pod，强制删除容易导致脑裂或者数据丢失等问题。
+
+于是我打算将node删除, 然后进行重新加入，删除node后-->node-110停止kubelet和docker(这时候再回到master上会发现pod删除了)-->kubeadm reset后-->重新join
+
+不出所料加入不了，会显示NotReady状态. 查看日志会发现是cni0分配的地址都不是一个网段的, 那么给出一整套正确的删除节点然后重新加入的方案吧:
+
+```
+kubectl drain <node name> --delete-local-data --force --ignore-daemonsets # 封锁node, 排干node上的pod
+kubectl delete node <node-name>
+# 这样原来node的pod会被调度到其他的node上
+
+# 然后需要在被移除的node上执行:
+kubeadm reset
+systemctl stop kubelet
+systemctl stop docker
+rm -rf /var/lib/cni/
+rm -rf /var/lib/kubelet/*
+rm -rf /etc/cni/
+ifconfig cni0 down
+ifconfig flannel.1 down
+ifconfig docker0 down
+ip link delete cni0
+ip link delete flannel.1
+systemctl start docker
+
+# 最后在master上
+kubeadm token create --print-join-command
+```
