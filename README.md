@@ -56,7 +56,7 @@ sudo yum --disablerepo="*" --enablerepo="elrepo-kernel" list available
 ```
 sudo yum -y --enablerepo=elrepo-kernel install kernel-lt.x86_64 kernel-lt-devel.x86_64
 ```
-这时候，在/etc/grub2.cfg中搜索"menuentry"能看到4.4.217的内核是在启动位置0的. 如果想哟生效，我们需要更改内核的启动顺序
+这时候，在/etc/grub2.cfg中搜索"menuentry"能看到4.4.217的内核是在启动位置0的. 如果想要生效，我们需要更改内核的启动顺序
 ```
 sudo vim /etc/default/grub
 # 将GRUB_DEFAULT=saved 改为GRUB_DEFAULT=0
@@ -782,7 +782,7 @@ kubeadm token create --print-join-command
 -------------------------
 
 
-***多型号GPU的支持**
+**多型号GPU的支持**
 如果不同的节点具有不同的GPU型号，可以给节点打上Label，然后在调用的时候指定Node
 ```
 kubectl label nodes <node-with-k80> accelerator=nvidia-tesla-k80
