@@ -173,7 +173,7 @@ sh retag_images.sh
 
 接下来我们需要做一个很重要片的事儿，特别坑
 
-那就同步系统时钟，否则，会node节点是死活加入不到master的，并且报的错误是balabala x509认证错误，网上解决反感都是说的是token过期, 当重新生产token还出现这个问题，那就是时钟问题了. [kubernetes-issue:58921](https://github.com/kubernetes/kubernetes/issues/58921#issuecomment-466362170)这个三哥一语道破
+那就同步系统时钟，否则，node节点会死活加入不到master的，并且报的错误是balabala x509认证错误，网上解决方式都是说的是token过期, 当重新生产token还出现这个问题，那就是时钟问题了. [kubernetes-issue:58921](https://github.com/kubernetes/kubernetes/issues/58921#issuecomment-466362170)这个三哥一语道破
 ```
 timedatectl set-timezone Asia/Shanghai
 systemctl enable chronyd
@@ -259,7 +259,7 @@ kubectl get nodes # 会发现全部是Ready状态了
 至此，kubernetes管理起了集群搭建完了. 
 
 
-接下来高一个dashboard吧
+接下来搞一个dashboard吧
 可以参考最新[官方recommended.ymal](https://github.com/kubernetes/dashboard/#getting-started)
 ```
 wget https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.0-rc4/aio/deploy/recommended.yaml
@@ -337,7 +337,7 @@ kubectl delete secret kubernetes-dashboard-key-holder --namespace=kubernetes-das
 
 在这里需要提前说明两个参数，--feature-gates="Accelerators=true"和--feature-gates="DevicePlugins=true"。在很多教程中都说明若要使用GPU，需要设置Accelerators为true，而实际上该参数在1.11版本之后就弃用了. 而将DevicePlugins设置为true也是在1.9版本之前需要做的事情，在1.10版本之后默认就为true. 所以对于我们来说，因为使用的是1.17版本，这两个feature-gates都不需要做设置.
 
-当node节点上修改万/etc/docker/daemon.json并且重启docker后
+当node节点上修改完/etc/docker/daemon.json并且重启docker后
 
 master执行
 
