@@ -776,3 +776,32 @@ systemctl start docker
 # 最后在master上
 kubeadm token create --print-join-command
 ```
+
+
+
+-------------------------
+
+
+***多型号GPU的支持**
+如果不同的节点具有不同的GPU型号，可以给节点打上Label，然后在调用的时候指定Node
+```
+kubectl label nodes <node-with-k80> accelerator=nvidia-tesla-k80
+kubectl label nodes <node-with-p100> accelerator=nvidia-tesla-p100
+```
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cuda-vector-add
+spec:
+  restartPolicy: OnFailure
+  containers:
+    - name: cuda-vector-add
+      # https://github.com/kubernetes/kubernetes/blob/v1.7.11/test/images/nvidia-cuda/Dockerfile
+      image: "k8s.gcr.io/cuda-vector-add:v0.1"
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+  nodeSelector:
+    accelerator: nvidia-tesla-p100 # or nvidia-tesla-k80 etc.
+```
