@@ -1,5 +1,5 @@
 #!/bin/bash
-images=(`cat ~/k8s_need_images.dat`)
+images=(`cat ./k8s_need_images.dat`)
 username=registry.cn-hangzhou.aliyuncs.com/google_containers
 #echo ${images[@]}
 for img in ${images[@]}
