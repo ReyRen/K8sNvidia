@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pod-testing # (optional)改变
+  namespace: ai
+spec:
+  selector:
+    matchLabels:
+      run: testing-label # Service会通过这个label来代理服务pod
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        run: testing-label
+    spec:
+      containers:
+      - name: nginx-testing # 改变
+        image: nginx # 改变
+        command: [ "/bin/bash", "-ce", "tail -f /dev/null" ]
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: mount-name-testing # (optional)改变
+          mountPath: /usr/share/nginx/html # (optional)改变
+      volumes:
+        - name: mount-name-testing # (optional)改变
+          persistentVolumeClaim:
+            claimName: pod-pvc-volume-1  # { pod-pvc-volume-1 pod-pvc-volume-2 pod-pvc-volume-3 }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-testing # (optional)改变
+  namespace: ai
+spec:
+  type: NodePort
+  selector:
+    run: testing-label
+  ports:
+    - name: webport      
+      protocol: TCP
+      nodePort: 30080 # (optional)改变 30000-32767
+      port: 8080
+      targetPort: 80
+    - name: sshport
+      protocol: TCP
+      nodePort: 30022 # (optional)改变 30000-32767
+      port: 40022
+      targetPort: 22
+
+
